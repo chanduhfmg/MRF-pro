@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+backend/.venv/
+backend/*.db
+backend/*.db-wal
+backend/*.db-shm
+backend/.env
+backend/.env.local
+
+# --- Node / frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/*.local
+frontend/*.tsbuildinfo
+*.tsbuildinfo
+
+# --- Data (uploaded MRFs + generated output) ---
+data/raw/
+data/output/
+data/_uploads/
+!data/.gitkeep
+
+# --- Editor / OS ---
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

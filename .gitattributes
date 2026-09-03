@@ -1,0 +1,12 @@
+# Normalize to LF in the repo; check out native on Windows.
+* text=auto eol=lf
+
+# Always LF (these run on the Linux server):
+*.sh            text eol=lf
+deploy/*.service text eol=lf
+deploy/*.conf   text eol=lf
+
+# Binary
+*.png binary
+*.woff2 binary
+*.zip binary

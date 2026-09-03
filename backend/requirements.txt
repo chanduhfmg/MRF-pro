@@ -1,0 +1,22 @@
+# NOTE: loose lower-bound pins on purpose. This project runs on Python 3.14,
+# and the exact-pinned older releases of pydantic-core / watchfiles have no
+# cp314 wheels yet (they'd try to compile Rust). Letting pip pick the newest
+# compatible release gets a prebuilt wheel on both Windows and Linux.
+
+# --- Web API ---
+fastapi>=0.115
+uvicorn>=0.34               # plain uvicorn: no [standard] so we don't pull
+                            # watchfiles/httptools (Rust build on py3.14)
+python-multipart>=0.0.20
+pydantic>=2.11
+pydantic-settings>=2.6
+
+# --- Database ---
+SQLAlchemy>=2.0.36
+PyMySQL>=1.1.1              # pure-python MySQL driver, no build step
+
+# --- Extraction pipeline ---
+ijson>=3.3.0               # streaming JSON parser for multi-GB MRF files
+
+# --- Misc ---
+python-dateutil>=2.9

@@ -1,0 +1,24 @@
+# systemd unit for the background extraction worker.
+#   sudo cp deploy/mrf-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mrf-worker
+#
+# Run more than one by templating (mrf-worker@1, mrf-worker@2, ...) -
+# the DB claim uses SELECT ... FOR UPDATE SKIP LOCKED so they won't collide.
+[Unit]
+Description=MRF Extraction Dashboard worker
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=mrf
+WorkingDirectory=/opt/mrf-dashboard/backend
+EnvironmentFile=/opt/mrf-dashboard/backend/.env
+ExecStart=/opt/mrf-dashboard/backend/.venv/bin/python -m app.worker
+Restart=always
+RestartSec=3
+# extraction jobs can run for hours; give the process time to finish on stop
+TimeoutStopSec=900
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
