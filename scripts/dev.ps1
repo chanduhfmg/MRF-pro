@@ -1,38 +1,63 @@
-# Local dev launcher (Windows PowerShell). Runs API + worker + Vite together.
-# Usage:  ./scripts/dev.ps1
+# Local dev launcher (Windows PowerShell).
+# Sets up (venv, deps, .env, DB, node_modules) in THIS window, then opens
+# three terminal windows: API :8000, worker, Vite :5173.
+#
+#   ./scripts/dev.ps1
+#   ./scripts/dev.ps1 -SetupOnly     # just prepare, don't launch
+
+param([switch]$SetupOnly)
+
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+$root      = Split-Path -Parent $PSScriptRoot
+$backend   = Join-Path $root "backend"
+$frontend  = Join-Path $root "frontend"
+$venvPy    = Join-Path $backend ".venv\Scripts\python.exe"
 
-# --- backend venv ---
-$venvPy = Join-Path $root "backend/.venv/Scripts/python.exe"
+function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
+
+# --- 1. backend venv + deps ------------------------------------------------
 if (-not (Test-Path $venvPy)) {
-  Write-Host "Creating backend venv..." -ForegroundColor Cyan
-  python -m venv (Join-Path $root "backend/.venv")
+  Step "Creating backend venv"
+  python -m venv (Join-Path $backend ".venv")
   & $venvPy -m pip install --upgrade pip
-  & $venvPy -m pip install -r (Join-Path $root "backend/requirements.txt")
+  Step "Installing backend requirements"
+  & $venvPy -m pip install -r (Join-Path $backend "requirements.txt")
 }
 
-if (-not (Test-Path (Join-Path $root "backend/.env"))) {
-  $envPath = Join-Path $root "backend/.env"
-  (Get-Content (Join-Path $root "backend/.env.example")) `
+# --- 2. backend/.env -----------------------------------------------------
+$envFile = Join-Path $backend ".env"
+if (-not (Test-Path $envFile)) {
+  Step "Writing backend/.env (SQLite + stub engine)"
+  (Get-Content (Join-Path $backend ".env.example")) `
     -replace '^EXTRACTION_MODE=.*', 'EXTRACTION_MODE=stub' |
-    Set-Content -Encoding utf8 $envPath
-  Write-Host "Created backend/.env from example (SQLite + stub engine)." -ForegroundColor Yellow
+    Set-Content -Encoding utf8 $envFile
 }
 
-& $venvPy -m scripts.init_db 2>$null; Push-Location (Join-Path $root "backend"); & $venvPy -m scripts.init_db; Pop-Location
+# --- 3. database (run from backend/ so `scripts.init_db` imports) --------
+Step "Initializing database"
+Push-Location $backend
+try { & $venvPy -m scripts.init_db } finally { Pop-Location }
 
-# --- frontend deps ---
-if (-not (Test-Path (Join-Path $root "frontend/node_modules"))) {
-  Push-Location (Join-Path $root "frontend"); npm install; Pop-Location
+# --- 4. frontend deps --------------------------------------------------
+if (-not (Test-Path (Join-Path $frontend "node_modules"))) {
+  Step "Installing frontend dependencies (npm install)"
+  Push-Location $frontend
+  try { npm install } finally { Pop-Location }
 }
 
-Write-Host "`nStarting API :8000, worker, and Vite :5173 ..." -ForegroundColor Green
-$api    = Start-Process -PassThru -NoNewWindow -WorkingDirectory (Join-Path $root "backend") $venvPy "-m","uvicorn","app.main:app","--reload","--port","8000"
-$worker = Start-Process -PassThru -NoNewWindow -WorkingDirectory (Join-Path $root "backend") $venvPy "-m","app.worker"
-$web    = Start-Process -PassThru -NoNewWindow -WorkingDirectory (Join-Path $root "frontend") "npm" "run","dev"
+if ($SetupOnly) { Step "Setup complete."; return }
 
-Write-Host "`n  UI   http://localhost:5173`n  API  http://localhost:8000/docs`n`nCtrl+C to stop all.`n" -ForegroundColor Cyan
-try { Wait-Process -Id $api.Id } finally {
-  foreach ($p in @($api,$worker,$web)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-}
+# --- 5. launch the three processes, each in its own window --------------
+Step "Launching API, worker, and Vite in separate windows"
+Start-Process powershell -ArgumentList @(
+  "-NoExit","-Command","cd '$backend'; & '$venvPy' -m uvicorn app.main:app --reload --port 8000")
+Start-Process powershell -ArgumentList @(
+  "-NoExit","-Command","cd '$backend'; & '$venvPy' -m app.worker")
+Start-Process powershell -ArgumentList @(
+  "-NoExit","-Command","cd '$frontend'; npm run dev")
+
+Write-Host ""
+Write-Host "  UI    http://localhost:5173"       -ForegroundColor Green
+Write-Host "  API   http://localhost:8000/docs"  -ForegroundColor Green
+Write-Host ""
+Write-Host "Close the three spawned windows (or Ctrl+C in each) to stop." -ForegroundColor DarkGray
