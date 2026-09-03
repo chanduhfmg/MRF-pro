@@ -3,6 +3,16 @@ Enrich an existing TiC rate-extraction CSV (from extract_tic_all.py) with
 provider/facility names and addresses, looked up from the free public
 NPPES NPI Registry.
 
+Columns added (one entry per NPI unless noted, ';'-joined in NPI order):
+    provider_names, organization_names, provider_addresses,
+    provider_cities, provider_states,
+    provider_zips    -- ZIP exactly as NPPES returns it (usually ZIP+4 as
+                        9 digits, no hyphen)
+    provider_zip5s   -- the same ZIPs normalized to 5 digits
+    primary_zip      -- ROW-LEVEL: the first non-empty 5-digit ZIP on the
+                        row, as one plain value to group / join / filter on
+                        without splitting a list (for the data team)
+
 This is the "all data" counterpart to extract_tic_all.py:
     - No geography filter. Every row from the input CSV is enriched and
       written to the output, regardless of where the provider is
@@ -88,7 +98,16 @@ def row_is_npi_eq_tin(row, npi_list):
 
 
 EMPTY_NPI_INFO = {"provider_name": "", "organization_name": "", "address": "",
-                  "city": "", "state": "", "zip": ""}
+                  "city": "", "state": "", "zip": "", "zip5": ""}
+
+
+def zip5(raw):
+    """First 5 digits of a postal code. NPPES returns ZIP+4 as nine digits
+    with no hyphen (e.g. '146043923'); the data team wants the plain
+    5-digit ZIP for joins to census / geo tables. Returns '' if there
+    aren't 5 digits to take."""
+    digits = re.sub(r"\D", "", raw or "")
+    return digits[:5] if len(digits) >= 5 else ""
 
 
 def _fetch_npi(npi):
@@ -140,6 +159,7 @@ def _fetch_npi(npi):
                 result["city"] = practice_addr.get("city", "")
                 result["state"] = practice_addr.get("state", "")
                 result["zip"] = practice_addr.get("postal_code", "")
+                result["zip5"] = zip5(result["zip"])
 
     except Exception as e:
         print(f"  Warning: NPI lookup failed for {npi}: {e}")
@@ -164,7 +184,12 @@ def lookup_npi(npi, cache):
 
 ENRICH_COLUMNS = [
     "provider_names", "organization_names", "provider_addresses",
-    "provider_cities", "provider_states", "provider_zips",
+    "provider_cities", "provider_states",
+    # zips: raw = whatever NPPES returned (often ZIP+4, 9 digits, no hyphen);
+    # zip5 = normalized 5-digit, one per NPI, ';'-joined; primary_zip = the
+    # first non-empty 5-digit ZIP on the row, as a single clean value the
+    # data team can group/join/filter on without splitting a list.
+    "provider_zips", "provider_zip5s", "primary_zip",
 ]
 
 
@@ -172,6 +197,14 @@ def _row_npi_list(row, cap):
     npi_field = row.get("npis", "") or ""
     npis = [n.strip() for n in npi_field.split(";") if n.strip()]
     return npis[:cap] if cap and cap > 0 else npis
+
+
+def _primary_zip(zip5_values):
+    """First non-empty 5-digit ZIP from a list (row-level convenience col)."""
+    for z in zip5_values:
+        if z:
+            return z
+    return ""
 
 
 def iter_enriched_rows(rows, *, threads=8, max_npis_per_row=MAX_NPIS_PER_ROW,
@@ -219,12 +252,15 @@ def iter_enriched_rows(rows, *, threads=8, max_npis_per_row=MAX_NPIS_PER_ROW,
         out = []
         for _row, npi_list in batch:
             infos = [cache.get(n, EMPTY_NPI_INFO) for n in npi_list]
+            zip5s = [i.get("zip5", "") for i in infos]
             _row["provider_names"] = ";".join(i["provider_name"] for i in infos)
             _row["organization_names"] = ";".join(i["organization_name"] for i in infos)
             _row["provider_addresses"] = ";".join(i["address"] for i in infos)
             _row["provider_cities"] = ";".join(i["city"] for i in infos)
             _row["provider_states"] = ";".join(i["state"] for i in infos)
             _row["provider_zips"] = ";".join(i["zip"] for i in infos)
+            _row["provider_zip5s"] = ";".join(zip5s)
+            _row["primary_zip"] = _primary_zip(zip5s)
             out.append(_row)
         return out
 
@@ -301,11 +337,7 @@ def enrich_csv(in_csv, out_csv):
 
     with open(in_csv, newline="", encoding="utf-8") as f_in:
         reader = csv.DictReader(f_in)
-        fieldnames = reader.fieldnames + [
-            "provider_names", "organization_names",
-            "provider_addresses", "provider_cities",
-            "provider_states", "provider_zips",
-        ]
+        fieldnames = reader.fieldnames + list(ENRICH_COLUMNS)
 
         # Open output immediately and write the header right away -- the
         # file exists and is readable from the very start of the run, not
@@ -334,6 +366,7 @@ def enrich_csv(in_csv, out_csv):
                 cities = []
                 states = []
                 zips = []
+                zip5s = []
 
                 for npi in npi_list:
                     before = len(cache)
@@ -346,6 +379,7 @@ def enrich_csv(in_csv, out_csv):
                     cities.append(info["city"])
                     states.append(info["state"])
                     zips.append(info["zip"])
+                    zip5s.append(info.get("zip5", ""))
 
                 # No geography filter -- every remaining row is written,
                 # regardless of where the resolved provider(s) are located.
@@ -355,6 +389,8 @@ def enrich_csv(in_csv, out_csv):
                 row["provider_cities"] = ";".join(cities)
                 row["provider_states"] = ";".join(states)
                 row["provider_zips"] = ";".join(zips)
+                row["provider_zip5s"] = ";".join(zip5s)
+                row["primary_zip"] = _primary_zip(zip5s)
 
                 # Write this row and flush to disk immediately -- an
                 # interrupted run still leaves every row written so far

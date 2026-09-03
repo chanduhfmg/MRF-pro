@@ -28,8 +28,10 @@ _FAKE_FIELDS = [
     "negotiated_rate", "billing_class", "service_code",
     "provider_group_id", "tin", "npis", "npi_count",
     "provider_names", "organization_names", "provider_states",
+    "provider_zips", "provider_zip5s", "primary_zip",
 ]
 _CODES = ["99213", "99214", "92014", "92250", "66984", "99204", "92133"]
+_ZIPS = ["14604", "10001", "75201", "33130", "19103", "94105", "60601"]
 
 
 def _sleep_scaled(total_bytes: int | None, base: float) -> float:
@@ -93,6 +95,7 @@ def run_stub(job, reporter: ProgressReporter, out_dir) -> PipelineResult:
 def _fake_row(i: int) -> dict:
     code = random.choice(_CODES)
     npis = [str(random.randint(1_000_000_000, 1_999_999_999)) for _ in range(random.randint(1, 4))]
+    zips = [random.choice(_ZIPS) for _ in npis]
     return {
         "billing_code": code,
         "billing_code_type": "CPT",
@@ -108,4 +111,7 @@ def _fake_row(i: int) -> dict:
         "provider_names": ";".join(f"Provider {n[-4:]}" for n in npis),
         "organization_names": random.choice(["", "Sample Health System", "Vision Partners LLC"]),
         "provider_states": ";".join(random.choice(["NY", "CA", "TX", "FL", "PA"]) for _ in npis),
+        "provider_zips": ";".join(f"{z}{random.randint(1000, 9999)}" for z in zips),
+        "provider_zip5s": ";".join(zips),
+        "primary_zip": zips[0] if zips else "",
     }

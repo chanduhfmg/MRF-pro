@@ -124,7 +124,11 @@ def test_full_pipeline_stub(app_ctx):
     names = zf.namelist()
     assert any(n.startswith("part_") and n.endswith(".csv") for n in names)
     first_csv = next(n for n in names if n.endswith(".csv"))
-    assert b"billing_code" in zf.read(first_csv)[:200]
+    header = zf.read(first_csv).splitlines()[0].decode()
+    assert "billing_code" in header
+    # zip columns the data team needs must be present
+    for col in ("provider_zips", "provider_zip5s", "primary_zip"):
+        assert col in header, header
 
     # 6. list + filters
     lst = client.get("/api/jobs", params={"company": "aetna", "status": "completed"}).json()
