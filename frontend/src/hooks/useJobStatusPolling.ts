@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { JobStatusLite } from "../lib/types";
 
-const TERMINAL = new Set(["completed", "failed"]);
+const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
 /**
  * Polls GET /api/jobs/{id}/status every `intervalMs` while the job is

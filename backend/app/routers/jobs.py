@@ -12,6 +12,7 @@ The polling worker picks up queued jobs on its own; nothing runs inline here.
 """
 from __future__ import annotations
 
+import csv
 import json
 from datetime import datetime, time as dtime
 from pathlib import Path
@@ -247,22 +248,159 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)) -> JobStatusOut:
     return JobStatusOut.from_job(job)
 
 
+@router.post("/{job_id}/cancel")
+def cancel_job(job_id: str, db: Session = Depends(get_db)) -> dict:
+    """"Stop extraction". A queued job is deleted outright - nothing was
+    ever produced, so there's nothing to keep. A running one is flagged;
+    the worker aborts within a few seconds, discards its partial output,
+    and deletes the job too - either way it disappears from the list
+    rather than sit there as a dead "cancelled" row. Nothing to stop once
+    a job has already finished."""
+    job = crud.get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status in (JobStatus.completed, JobStatus.failed, JobStatus.cancelled):
+        raise HTTPException(409, f"Job already {job.status.value}; nothing to stop.")
+    job, deleted = crud.request_job_cancel(db, job_id)
+    if deleted:
+        return {"id": job_id, "deleted": True, "status": None, "current_stage": None}
+    return {
+        "id": job.id,
+        "deleted": False,
+        "status": job.status.value,
+        "current_stage": job.current_stage,
+    }
+
+
+@router.post("/{job_id}/rerun", response_model=JobOut)
+def rerun_job(job_id: str, db: Session = Depends(get_db)) -> JobOut:
+    """Retry a failed job - same file, same target, same codes, queued
+    fresh. For a one-off failure (a firewall blip, a transient network
+    error) rather than digging back through Search to re-queue the same
+    file by hand."""
+    job = crud.get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status != JobStatus.failed:
+        raise HTTPException(
+            409, f"Job is {job.status.value}, not failed; nothing to rerun."
+        )
+    job = crud.rerun_job(db, job_id)
+    return JobOut.from_job(job)
+
+
+def _build_xlsx_from_parts(job, db: Session) -> Path | None:
+    """Lazily materialise output.xlsx for a completed job from its CSV parts.
+    Returns None when the row count exceeds one sheet or no parts exist."""
+    from ..pipeline.package import XLSX_MAX_ROWS, write_xlsx
+
+    out_dir = Path(job.output_zip_path).parent
+    parts = sorted(out_dir.glob("part_*.csv"))
+    if not parts:
+        raise HTTPException(410, "CSV parts are missing from disk; the zip may still work")
+    rows = job.record_count or 0
+    if rows > XLSX_MAX_ROWS:
+        return None
+
+    with open(parts[0], newline="", encoding="utf-8") as f:
+        header = f.readline().rstrip("\r\n")
+    fieldnames = next(csv.reader([header])) if header else []
+
+    summary: dict = {"payer": job.insurance_company, "plan": job.plan_name, "rows": rows}
+    mf = out_dir / "manifest.json"
+    if mf.exists():
+        try:
+            m = json.loads(mf.read_text(encoding="utf-8"))
+            es = m.get("extract_stats", {})
+            summary.update(
+                target=m.get("target"),
+                codes=", ".join(m.get("target_codes") or []) or "default set",
+                items_scanned=es.get("items_scanned"),
+                dropped_off_target=es.get("dropped_off_target"),
+                codes_matched=", ".join(es.get("matched_codes", [])),
+            )
+        except Exception:
+            pass
+
+    from ..pipeline.package import PROVIDERS_CSV
+
+    providers = out_dir / PROVIDERS_CSV
+    path = write_xlsx(
+        parts, out_dir, fieldnames, rows, summary=summary,
+        providers_csv=providers if providers.exists() else None,
+    )
+    if path is not None:
+        job.output_xlsx_path = str(path)
+        db.commit()
+    return path
+
+
+@router.get("/{job_id}/manifest")
+def get_job_manifest(job_id: str, db: Session = Depends(get_db)) -> dict:
+    """The manifest.json written next to the CSVs: row counts, which codes
+    were requested vs actually matched, how many provider groups were dropped
+    as off-target or corrupt. This is what turns "0 records" into an
+    explanation."""
+    job = crud.get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if not job.output_zip_path:
+        raise HTTPException(409, "Job has no output yet")
+    mf = Path(job.output_zip_path).parent / "manifest.json"
+    if not mf.exists():
+        raise HTTPException(410, "Manifest is missing from disk")
+    try:
+        return json.loads(mf.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Manifest is unreadable: {e}") from e
+
+
 @router.get("/{job_id}/download")
-def download_output(job_id: str, db: Session = Depends(get_db)):
+def download_output(
+    job_id: str,
+    format: str = Query("xlsx", pattern="^(xlsx|zip)$"),
+    db: Session = Depends(get_db),
+):
+    """The finished output, named so a folder of them is self-explanatory:
+    PAYER_plan_TIN|NPI_date_codeset.xlsx (see naming.py).
+
+    `xlsx` (default) is the single workbook; `zip` is the CSV parts plus
+    manifest. Above ~1M rows only the zip exists and xlsx answers 409.
+    """
+    from ..naming import download_basename
+
     job = crud.get_job(db, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
     if job.status != JobStatus.completed or not job.output_zip_path:
         raise HTTPException(409, "Job output is not ready")
+
+    if format == "xlsx":
+        xlsx = Path(job.output_xlsx_path) if job.output_xlsx_path else None
+        if xlsx is None or not xlsx.exists():
+            # Jobs that finished before the workbook existed (or whose file
+            # was cleaned up) still have their CSV parts next to the zip -
+            # build the workbook from those on first request.
+            xlsx = _build_xlsx_from_parts(job, db)
+            if xlsx is None:
+                raise HTTPException(
+                    409,
+                    "This output has more rows than an Excel sheet can hold; "
+                    "download the CSV zip instead (?format=zip).",
+                )
+        return FileResponse(
+            path=str(xlsx),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=download_basename(job, "xlsx"),
+        )
+
     zip_path = Path(job.output_zip_path)
     if not zip_path.exists():
         raise HTTPException(410, "Output archive is missing from disk")
-
-    fname = f"{job.insurance_company}_{Path(job.source_filename).stem}_{job.id[:8]}.zip"
     return FileResponse(
         path=str(zip_path),
         media_type="application/zip",
-        filename=fname,
+        filename=download_basename(job, "zip"),
     )
 
 

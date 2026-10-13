@@ -2,7 +2,11 @@ import { NavLink } from "react-router-dom";
 import { motion } from "framer-motion";
 
 const NAV = [
-  { to: "/upload", label: "Upload", icon: UploadIcon },
+  { to: "/search", label: "Search NPI / TIN", icon: SearchIcon },
+  { to: "/lookup", label: "Provider Lookup", icon: LookupIcon },
+  { to: "/upload", label: "Upload a file", icon: UploadIcon },
+  { to: "/columns", label: "Check Columns", icon: ColumnsIcon },
+  { to: "/convert", label: "Convert File", icon: ConvertIcon },
   { to: "/jobs", label: "Jobs", icon: JobsIcon },
   { to: "/dashboard", label: "KPI Dashboard", icon: ChartIcon },
 ];
@@ -88,11 +92,45 @@ function LogoMark() {
   );
 }
 
+function SearchIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M16 16l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+function LookupIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M8 9h8M8 12.5h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <circle cx="15" cy="16" r="2.4" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M16.7 17.7L18.5 19.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
 function UploadIcon({ className = "" }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className}>
       <path d="M12 16V4m0 0l-4 4m4-4l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+function ColumnsIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M9.5 4.5v15M14.5 4.5v15" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
+function ConvertIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <path d="M4 7h10M14 7l-3-3M14 7l-3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M20 17H10M10 17l3-3M10 17l3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

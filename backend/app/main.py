@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .database import init_db
-from .routers import jobs, kpis
+from .routers import code_sets, columns, convert, jobs, kpis, search
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +33,12 @@ log = logging.getLogger("mrf.api")
 async def lifespan(_app: FastAPI):
     settings.ensure_dirs()
     init_db()
+    if settings.index_refresh_on_startup:
+        # stale payer index URLs are refreshed on a background thread so
+        # startup never waits on the network
+        from .index_store import refresh_in_background
+
+        refresh_in_background()
     log.info(
         "API up | db=%s | mode=%s | data_root=%s",
         "sqlite" if settings.is_sqlite else "mysql",
@@ -59,6 +65,10 @@ app.add_middleware(
 
 app.include_router(jobs.router)
 app.include_router(kpis.router)
+app.include_router(search.router)
+app.include_router(code_sets.router)
+app.include_router(columns.router)
+app.include_router(convert.router)
 
 
 @app.get("/api/health")

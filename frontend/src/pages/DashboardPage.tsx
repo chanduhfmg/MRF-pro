@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import Countdown from "../components/Countdown";
 import PageTransition from "../components/PageTransition";
 import PageHeader from "../components/PageHeader";
 import GlassCard from "../components/GlassCard";
@@ -26,17 +27,251 @@ export default function DashboardPage() {
   const k = q.data;
   const loading = q.loading;
 
+  // keep the queue countdown honest while jobs are running
+  const busy = Boolean(k && (k.totals.processing_jobs > 0 || k.totals.queued_jobs > 0));
+  useEffect(() => {
+    if (!busy) return;
+    const t = window.setInterval(() => q.silentRefetch(), 8000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+
+  // Searches never show up in /api/kpis - that endpoint only ever aggregates
+  // extraction jobs, so a search that hasn't produced any jobs yet (or
+  // won't, if nothing matched) was otherwise invisible outside the Search
+  // page itself. Pull "processing" and "queued" separately rather than one
+  // unfiltered call, so an active search is never pushed off the page by
+  // older completed ones ahead of it.
+  const activeSearchesQ = useAsync(async () => {
+    const [processing, queued] = await Promise.all([
+      api.listSearches(10, "processing"),
+      api.listSearches(10, "queued"),
+    ]);
+    return [...processing.searches, ...queued.searches];
+  }, []);
+  const activeSearches = activeSearchesQ.data ?? [];
+  useEffect(() => {
+    if (activeSearches.length === 0) return;
+    const t = window.setInterval(() => activeSearchesQ.silentRefetch(), 5000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSearches.length]);
+
+  // Same gap as searches, but for jobs: the KPI totals say "3 processing"
+  // with no way to see which three, what file each one is on, or - once one
+  // finishes - a direct way to grab it without digging through the full
+  // Jobs page and its filters. List the actual rows here instead.
+  const activeJobsQ = useAsync(async () => {
+    const [processing, queued] = await Promise.all([
+      api.listJobs({ status: "processing", limit: 10 }),
+      api.listJobs({ status: "queued", limit: 10 }),
+    ]);
+    return [...processing.jobs, ...queued.jobs];
+  }, []);
+  const activeJobs = activeJobsQ.data ?? [];
+
+  // Finished recently and ready to grab - the thing that's otherwise easy to
+  // lose track of once a few more jobs queue up behind it.
+  const readyJobsQ = useAsync(
+    () => api.listJobs({ status: "completed", limit: 5 }),
+    [],
+  );
+  const readyJobs = (readyJobsQ.data?.jobs ?? []).filter((j) => j.has_output);
+
+  useEffect(() => {
+    if (activeJobs.length === 0) return;
+    const t = window.setInterval(() => {
+      activeJobsQ.silentRefetch();
+      readyJobsQ.silentRefetch();
+    }, 5000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobs.length]);
+
   return (
     <PageTransition>
       <PageHeader
         title="KPI Dashboard"
         subtitle="Live aggregates across every extraction job."
         actions={
-          <Link to="/upload" className="btn btn-primary">
-            New extraction
+          <Link to="/search" className="btn btn-primary">
+            New search
           </Link>
         }
       />
+
+      {/* Active searches - invisible everywhere else on this page, since
+          /api/kpis only ever aggregates jobs. A search that hasn't produced
+          any jobs yet (or never will, if nothing matched) otherwise looked
+          like nothing was happening. */}
+      {activeSearches.length > 0 && (
+        <GlassCard className="mb-5 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
+            </span>
+            <h3 className="text-sm font-medium">
+              {activeSearches.length} active search{activeSearches.length === 1 ? "" : "es"}
+            </h3>
+          </div>
+          <div className="space-y-2.5">
+            {activeSearches.map((s) => (
+              <Link
+                key={s.id}
+                to={`/search?resume=${s.id}`}
+                title="Open the files matched so far - available to download/extract without waiting for the scan to finish"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 transition-colors hover:border-accent-500/30 hover:bg-white/[0.04]"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <StatusBadge status={s.status} size="xs" />
+                  <span className="truncate text-sm">
+                    <span className="font-medium">{s.insurance_company_label}</span>
+                    <span className="text-faint">
+                      {" "}
+                      · {s.search_type.toUpperCase()} {s.search_value}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-dim tnum">
+                  <span>{s.current_stage || "Queued"}</span>
+                  {s.status === "processing" && (
+                    <>
+                      <span>
+                        {formatNumber(s.files_scanned)}
+                        {s.files_listed ? ` / ${formatNumber(s.files_listed)}` : ""} files
+                      </span>
+                      <span className="text-emerald-300">{formatNumber(s.files_matched)} matched</span>
+                      {s.eta_seconds != null && (
+                        <Countdown seconds={s.eta_seconds} suffix=" left" />
+                      )}
+                    </>
+                  )}
+                </div>
+              </Link>
+            ))}
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Active jobs - which files are actually being worked on right now,
+          not just a count. */}
+      {activeJobs.length > 0 && (
+        <GlassCard className="mb-5 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-400 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-accent-400" />
+            </span>
+            <h3 className="text-sm font-medium">
+              {activeJobs.length} active job{activeJobs.length === 1 ? "" : "s"}
+            </h3>
+          </div>
+          <div className="space-y-2.5">
+            {activeJobs.map((j) => (
+              <div
+                key={j.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <StatusBadge status={j.status} size="xs" />
+                  <Link
+                    to={`/jobs/${j.id}`}
+                    className="truncate text-sm hover:text-accent-300"
+                    title={j.source_filename}
+                  >
+                    <span className="font-medium">{j.insurance_company_label}</span>
+                    <span className="text-faint"> · {j.source_filename}</span>
+                  </Link>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-dim tnum">
+                  <span>{j.current_stage || "Queued"}</span>
+                  {j.status === "processing" && (
+                    <>
+                      <span>{j.percent_complete.toFixed(0)}%</span>
+                      {j.eta_seconds != null && (
+                        <Countdown seconds={j.eta_seconds} suffix=" left" />
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Ready to download - easy to lose track of once more jobs queue up
+          behind a finished one. */}
+      {readyJobs.length > 0 && (
+        <GlassCard className="mb-5 p-4">
+          <h3 className="mb-3 text-sm font-medium">Ready to download</h3>
+          <div className="space-y-2.5">
+            {readyJobs.map((j) => (
+              <div
+                key={j.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2"
+              >
+                <Link
+                  to={`/jobs/${j.id}`}
+                  className="min-w-0 truncate text-sm hover:text-accent-300"
+                  title={j.source_filename}
+                >
+                  <span className="font-medium">{j.insurance_company_label}</span>
+                  <span className="text-faint"> · {j.source_filename}</span>
+                </Link>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-faint tnum">
+                    {formatRelative(j.completed_at)}
+                  </span>
+                  <a
+                    className="btn btn-ghost !px-2 !py-1 !text-[11px]"
+                    href={api.downloadUrl(j.id, "xlsx")}
+                    title={j.download_name ?? undefined}
+                  >
+                    <DownloadIcon /> Excel
+                  </a>
+                  <a
+                    className="btn btn-ghost !px-2 !py-1 !text-[11px]"
+                    href={api.downloadUrl(j.id, "zip")}
+                  >
+                    <DownloadIcon /> Zip
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Queue drain ETA - only meaningful while something is actually in flight */}
+      {k && k.queue_eta_seconds != null && (
+        <GlassCard className="mb-5 flex flex-wrap items-center justify-between gap-3 p-4">
+          <div className="flex items-center gap-3">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-400 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-accent-400" />
+            </span>
+            <span className="text-sm">
+              <span className="font-medium">
+                {formatNumber(k.totals.processing_jobs)} running
+              </span>
+              <span className="text-faint">
+                {" "}
+                · {formatNumber(k.totals.queued_jobs)} queued
+              </span>
+            </span>
+          </div>
+          <span className="text-sm tnum">
+            <span className="text-faint">queue clears in </span>
+            <Countdown
+              seconds={k.queue_eta_seconds}
+              suffix=""
+              className="font-semibold text-accent-400"
+            />
+          </span>
+        </GlassCard>
+      )}
 
       {q.error && (
         <GlassCard className="p-8 text-center text-sm text-red-300">{q.error}</GlassCard>
@@ -193,6 +428,14 @@ export default function DashboardPage() {
   );
 }
 
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">
+      <path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 17v2a1 1 0 001 1h12a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
 function DotIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">

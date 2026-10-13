@@ -18,7 +18,10 @@ from app.database import engine, init_db  # noqa: E402
 def main() -> None:
     print(f"database: {'sqlite' if settings.is_sqlite else 'mysql'} -> {engine.url}")
     init_db()
-    print("tables ready (extraction_jobs).")
+    print(
+        "tables ready: extraction_jobs, provider_searches, search_matches, "
+        "cpt_code_sets, kpi_snapshots."
+    )
 
 
 if __name__ == "__main__":

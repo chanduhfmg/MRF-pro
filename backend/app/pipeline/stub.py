@@ -79,8 +79,74 @@ def run_stub(job, reporter: ProgressReporter, out_dir) -> PipelineResult:
 
     # --- Stage 4: package (92% -> 100%) ---
     reporter.set_stage(STAGE_PACKAGING)
-    parts, total_rows = write_split_csvs(iter(rows_buffer), out_dir, _FAKE_FIELDS)
+    from .package import track_npis, write_providers_csv, write_xlsx
+
+    npi_tins: dict = {}
+    npi_rows: dict = {}
+    parts, total_rows = write_split_csvs(
+        track_npis(iter(rows_buffer), npi_tins, npi_rows), out_dir, _FAKE_FIELDS
+    )
+    # a fake provider directory, one line per NPI, like the real pipeline
+    directory = {
+        n: {
+            "provider_name": f"Provider {n[-4:]}", "organization_name": "",
+            "address": f"{n[-3:]} Main St", "city": "Rochester", "state": "NY",
+            "zip": "146043923", "zip5": "14604",
+        }
+        for n in npi_rows
+    }
+    providers_csv = write_providers_csv(out_dir, directory, npi_tins, npi_rows)
+
+    # Same manifest shape the real pipeline writes, so stub mode exercises the
+    # manifest endpoint and the "why zero rows?" card rather than 404-ing.
+    import json
+    from datetime import datetime, timezone
+
+    (out_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "job_id": job.id,
+                "insurance_company": job.insurance_company,
+                "plan_name": job.plan_name,
+                "source_filename": job.source_filename,
+                "source_url": job.source_url,
+                "source_size_bytes": total_bytes,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "row_count": total_rows,
+                "provider_count": len(directory),
+                "csv_parts": [p.name for p in parts],
+                "providers_csv": providers_csv.name if providers_csv else None,
+                "target": (
+                    {"type": job.target_type, "value": job.target_value}
+                    if job.target_type and job.filter_to_target
+                    else None
+                ),
+                "target_codes": None,
+                "code_set_name": job.code_set_name,
+                "engine": "stub",
+                "extract_stats": {
+                    "items_scanned": total_rows,
+                    "rows": total_rows,
+                    "dropped_off_target": 0,
+                    "dropped_npi_eq_tin": 0,
+                    "matched_codes": sorted({r["billing_code"] for r in rows_buffer}),
+                },
+                "enrich_stats": {"rows_written": total_rows, "unique_npis": len(directory)},
+                "columns": _FAKE_FIELDS,
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+
     zip_path, zip_size = zip_parts(job.id, out_dir, parts)
+
+    xlsx_path = write_xlsx(
+        parts, out_dir, _FAKE_FIELDS, total_rows,
+        summary={"payer": job.insurance_company, "rows": total_rows, "engine": "stub"},
+        providers_csv=providers_csv,
+    )
     reporter.update(bytes_processed=total_bytes, records_processed=total_rows)
 
     log.info("stub job %s produced %d rows in %d part(s)", job.id, total_rows, len(parts))
@@ -89,6 +155,7 @@ def run_stub(job, reporter: ProgressReporter, out_dir) -> PipelineResult:
         output_file_count=len(parts),
         zip_path=zip_path,
         zip_size_bytes=zip_size,
+        xlsx_path=xlsx_path,
     )
 
 

@@ -20,3 +20,6 @@ ijson>=3.3.0               # streaming JSON parser for multi-GB MRF files
 
 # --- Misc ---
 python-dateutil>=2.9
+
+# --- Output ---
+openpyxl>=3.1              # single-workbook .xlsx download (write-only streaming)

@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
-import { formatEta, formatPercent } from "../lib/format";
+import { formatPercent } from "../lib/format";
+import Countdown from "./Countdown";
 
 interface Props {
   percent: number;
@@ -47,8 +48,10 @@ export default function ProgressBar({
         </span>
         <span className="tnum text-faint">
           <span className={failed ? "text-red-300" : "text-[var(--text)]"}>{formatPercent(pct)}</span>
-          {active && etaSeconds != null && etaSeconds > 0 && (
-            <span className="ml-2">· {formatEta(etaSeconds)}</span>
+          {active && etaSeconds !== undefined && (
+            <span className="ml-2 text-accent-400">
+              · <Countdown seconds={etaSeconds} active={active} />
+            </span>
           )}
         </span>
       </div>

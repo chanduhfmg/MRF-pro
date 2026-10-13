@@ -2,7 +2,7 @@
 On-disk layout helpers.
 
     {DATA_ROOT}/raw/{company}/{filename}          <- uploaded MRF
-    {DATA_ROOT}/output/{job_id}/part_0001.csv ... <- split CSVs
+    {DATA_ROOT}/output/{job_id}/PAYER_codeset_part_0001.csv ... <- split CSVs
     {DATA_ROOT}/output/{job_id}/{job_id}.zip      <- packaged archive
     {DATA_ROOT}/_uploads/{upload_id}/chunk_000001 <- in-progress chunk parts
 """

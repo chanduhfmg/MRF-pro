@@ -290,7 +290,43 @@ def build_provider_lookup(gz_path, progress=None):
     return lookup
 
 
-def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None):
+def make_target_filter(target_kind=None, target_value=None):
+    """Build a predicate that decides whether one provider sub-group belongs
+    to the NPI or TIN the user searched for.
+
+    Returns None when no target is given, which is the default and keeps the
+    "every provider group in the file" behaviour this script was written for.
+    Comparison goes through normalize_id() on both sides, so '0141536357' and
+    '141536357' are the same id here exactly as they are everywhere else.
+    """
+    if not target_kind or not target_value:
+        return None
+    kind = str(target_kind).strip().lower()
+    if kind not in ("npi", "tin"):
+        return None
+    wanted = normalize_id(str(target_value))
+
+    def keep(tin_val, raw_npis):
+        if kind == "tin":
+            return normalize_id(tin_val or "") == wanted
+        return any(normalize_id(str(n)) == wanted for n in raw_npis)
+
+    return keep
+
+
+def normalize_codes(codes):
+    """Turn a user-supplied code list into the set the in_network pass
+    matches against: stripped, upper-cased (HCPCS codes like 'g0439' must
+    match 'G0439'), de-duplicated, empties dropped. Returns None for an
+    empty input so callers fall back to TARGET_CODES."""
+    if not codes:
+        return None
+    cleaned = {str(c).strip().upper() for c in codes if str(c).strip()}
+    return cleaned or None
+
+
+def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None,
+                   target_kind=None, target_value=None, target_codes=None):
     """Second pass, as a generator: stream `in_network.item`, and for every
     (price entry x provider sub-group) that matches a TARGET_CODE, yield a
     fully-stringified `row` dict ready to hand to csv.DictWriter with
@@ -308,12 +344,46 @@ def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None):
     - `stats`: optional dict, updated in place with final counters
       (items_scanned, rows, dropped_npi_eq_tin, matched_codes,
       extra_columns) so the caller can print a summary.
+    - `target_kind` / `target_value`: optionally narrow output to one
+      provider. 'npi' keeps only sub-groups whose npi list contains that
+      NPI; 'tin' keeps only sub-groups with that TIN. Both default to None,
+      i.e. no narrowing -- the dashboard passes them when the job came from
+      an NPI/TIN search so the CSV holds that provider's rates instead of
+      the whole payer's.
+    - `target_codes`: optionally REPLACE the built-in TARGET_CODES with a
+      custom CPT/HCPCS list (the dashboard's saved code sets).
+      None/empty behaves differently depending on whether a target is set:
+        * no target (target_kind is None): falls back to the full default
+          E&M + ophthalmic set, exactly as before.
+        * target given, no explicit codes: NO code restriction at all --
+          every code that provider bills is captured. A targeted
+          extraction's whole point is "what does this provider bill", so
+          silently narrowing to the generic 78-code default here would
+          produce a misleading 0-row result for a provider billing
+          entirely outside that set, even though they're genuinely
+          present in the file.
     """
     if provider_lookup is None:
         provider_lookup = build_provider_lookup(gz_path, progress=progress)
 
+    target_keep = make_target_filter(target_kind, target_value)
+    explicit_codes = normalize_codes(target_codes)
+    if explicit_codes is not None:
+        codes_filter = explicit_codes
+    elif target_keep is not None:
+        # Narrowed to one NPI/TIN with no code list given: the point of a
+        # targeted extraction is "what does THIS provider bill", so capture
+        # every code they bill rather than silently falling back to the
+        # generic E&M/ophthalmic default -- a provider billing outside that
+        # 78-code set would otherwise produce a silent 0-row result even
+        # though they're genuinely in the file.
+        codes_filter = None
+    else:
+        codes_filter = TARGET_CODES
+
     extra_columns = set()
     dropped_npi_eq_tin = 0
+    dropped_off_target = 0
     row_count = 0
     total_size = os.path.getsize(gz_path)
     raw, stream_cm = open_json_stream(gz_path)
@@ -335,8 +405,9 @@ def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None):
                     window_bytes = bytes_read - last_bytes
                     rate = window_bytes / window_secs if window_secs > 0 else 0
                     eta_sec = (total_size - bytes_read) / rate if rate > 0 else 0
+                    codes_label = f"{len(matched_codes)}/{len(codes_filter)}" if codes_filter is not None else f"{len(matched_codes)} (all codes)"
                     print(f"  [{int(now - start)}s elapsed] in_network pass: {pct:.1f}% of file read "
-                          f"({count} items scanned, {len(matched_codes)}/{len(TARGET_CODES)} unique CPT codes matched, "
+                          f"({count} items scanned, {codes_label} unique CPT codes matched, "
                           f"{row_count} rows written) "
                           f"— ETA ~{int(eta_sec // 60)}m {int(eta_sec % 60)}s", flush=True)
                     if progress is not None:
@@ -349,7 +420,7 @@ def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None):
                     print(f"  ...scanned {count} in_network items, {row_count} rows written so far", flush=True)
 
                 code = item.get("billing_code")
-                if code not in TARGET_CODES:
+                if codes_filter is not None and str(code).strip().upper() not in codes_filter:
                     continue
                 matched_codes.add(code)
 
@@ -374,6 +445,14 @@ def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None):
                                 continue
                             if not raw_npis:
                                 continue  # nothing to report for this sub-group
+
+                            # Narrow to the searched provider, when one was
+                            # given. Applied AFTER the npi==tin guard so a
+                            # corrupt sub-group is still dropped as corrupt
+                            # rather than counted as "off target".
+                            if target_keep is not None and not target_keep(tin_val, raw_npis):
+                                dropped_off_target += 1
+                                continue
 
                             for price in rate_entry.get("negotiated_prices", []):
                                 row = {}
@@ -406,6 +485,12 @@ def iter_rate_rows(gz_path, provider_lookup=None, progress=None, stats=None):
                 items_scanned=count,
                 rows=row_count,
                 dropped_npi_eq_tin=dropped_npi_eq_tin,
+                dropped_off_target=dropped_off_target,
+                target_kind=target_kind,
+                target_value=target_value,
+                codes_requested=sorted(codes_filter) if codes_filter is not None else "all",
+                custom_codes=bool(normalize_codes(target_codes)),
+                all_codes_for_target=codes_filter is None,
                 matched_codes=sorted(matched_codes),
                 extra_columns=sorted(extra_columns),
             )

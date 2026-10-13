@@ -7,6 +7,9 @@ backend/*.db-wal
 backend/*.db-shm
 backend/.env
 backend/.env.local
+# Per-host overrides for payer MRF index URLs (see app/payers.py). Host-specific
+# by nature - the committed defaults live in the registry, not here.
+backend/payer_sources.json
 
 # --- Node / frontend ---
 frontend/node_modules/
@@ -21,7 +24,23 @@ frontend/*.tsbuildinfo
 data/raw/
 data/output/
 data/_uploads/
+data/_cache/
+# The dev SQLite DB (DATABASE_URL blank -> DATA_ROOT/mrf.db). Generated at
+# runtime, differs per environment - same reasoning as backend/*.db above,
+# just the other path the app actually uses it from.
+data/*.db
+data/*.db-wal
+data/*.db-shm
 !data/.gitkeep
+
+# Manually-downloaded Aetna/MVP index files (the HealthSparq-block
+# workaround) and the sample zips/json they came from - not needed where
+# Aetna/MVP already work live over the network.
+data/local_indexes/aetna/
+data/local_indexes/mvp/
+/Aetna_MRF_files.zip
+/MVP_machine_readable_files.zip
+/mvp_all_files.json
 
 # --- Editor / OS ---
 .claude/
@@ -30,3 +49,4 @@ data/_uploads/
 .DS_Store
 Thumbs.db
 *.log
+backend/payer_index.json

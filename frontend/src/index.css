@@ -14,6 +14,18 @@
   --text-faint: #6b7076;
   --accent: #1a5c38;
   --accent-bright: #3ddc84;
+
+  /* Dropdown menu surface. OPAQUE and deliberately lighter than the page:
+     the menu must read as a distinct layer floating above the content, not
+     as more dark-on-dark. */
+  --menu-bg: #212730;
+  --menu-border: rgba(255, 255, 255, 0.18);
+  --menu-text: #f4f6f8;
+  --menu-hover-bg: rgba(255, 255, 255, 0.09);
+  /* the app's accent green: white on it measures 8.07:1 (AAA), where the
+     lighter #1d6b42 only reached 6.5:1 */
+  --menu-active-bg: #1a5c38;
+  --menu-active-text: #ffffff;
 }
 
 * {
@@ -122,10 +134,64 @@ h4 {
     @apply w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--text)] outline-none transition;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid var(--hairline);
+    /* keep native widgets (date picker, select arrow) on the dark palette */
+    color-scheme: dark;
   }
   .input:focus {
     border-color: rgba(61, 220, 132, 0.4);
     box-shadow: 0 0 0 3px rgba(26, 92, 56, 0.18);
+  }
+
+  /* ---------- Native <select>: fallback only ----------
+     The app uses components/Select.tsx instead, because Chrome and Edge on
+     Windows paint the option list with a native widget that IGNORES
+     `option { background-color }` - the rules below compute correctly in the
+     CSSOM and still render as light-on-light. They stay as a safety net for
+     any native <select> that slips in, but they cannot be relied on: if you
+     need a dropdown, use <Select>. */
+  select,
+  select.input {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    /* chevron, and room for it */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.8rem center;
+    background-size: 0.7rem;
+    padding-right: 2.3rem;
+  }
+  select.input {
+    /* re-state: the .input `background` shorthand above wipes background-image */
+    background-color: rgba(255, 255, 255, 0.04);
+  }
+  select:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+  select:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  select option,
+  select optgroup {
+    background-color: var(--menu-bg);
+    color: var(--menu-text);
+    /* Firefox draws the option box edge-to-edge; give the text room */
+    padding: 0.4rem 0.6rem;
+  }
+  select option:disabled {
+    color: var(--text-faint);
+  }
+  select option:checked,
+  select option:hover,
+  select option:focus {
+    background: var(--menu-active-bg) linear-gradient(
+      0deg,
+      var(--menu-active-bg) 0%,
+      var(--menu-active-bg) 100%
+    );
+    color: var(--menu-active-text);
   }
 
   .hairline {

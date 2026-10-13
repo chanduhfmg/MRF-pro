@@ -6,8 +6,9 @@ import PageHeader from "../components/PageHeader";
 import GlassCard from "../components/GlassCard";
 import Dropzone from "../components/Dropzone";
 import ProgressBar from "../components/ProgressBar";
+import Countdown from "../components/Countdown";
 import { api } from "../lib/api";
-import { formatBytes } from "../lib/format";
+import { formatBytes, formatRate } from "../lib/format";
 import type { Meta } from "../lib/types";
 
 const FALLBACK_COMPANIES = [
@@ -27,6 +28,10 @@ export default function UploadPage({ meta }: { meta: Meta | null }) {
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [sentBytes, setSentBytes] = useState(0);
+  // Upload ETA is measured client-side: the browser is the only place that
+  // knows how fast these chunks are actually leaving the machine.
+  const [rate, setRate] = useState<number | null>(null);
+  const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const uploadIdRef = useRef<string | null>(null);
@@ -52,8 +57,11 @@ export default function UploadPage({ meta }: { meta: Meta | null }) {
     setError(null);
     setPhase("uploading");
     setSentBytes(0);
+    setRate(null);
+    setEtaSeconds(null);
     const ac = new AbortController();
     abortRef.current = ac;
+    const startedAt = Date.now();
 
     try {
       const { upload_id, chunk_size } = await api.initUpload({
@@ -69,7 +77,15 @@ export default function UploadPage({ meta }: { meta: Meta | null }) {
         const startB = i * chunk_size;
         const blob = file.slice(startB, Math.min(file.size, startB + chunk_size));
         await api.uploadChunk(upload_id, i, blob, ac.signal);
-        setSentBytes(Math.min(file.size, startB + blob.size));
+        const sent = Math.min(file.size, startB + blob.size);
+        setSentBytes(sent);
+
+        const elapsed = (Date.now() - startedAt) / 1000;
+        if (elapsed > 0.5 && sent > 0) {
+          const bps = sent / elapsed;
+          setRate(bps);
+          setEtaSeconds(bps > 0 ? Math.max(0, (file.size - sent) / bps) : null);
+        }
       }
 
       setPhase("finalizing");
@@ -94,6 +110,8 @@ export default function UploadPage({ meta }: { meta: Meta | null }) {
     }
     setPhase("idle");
     setSentBytes(0);
+    setRate(null);
+    setEtaSeconds(null);
   }
 
   return (
@@ -139,9 +157,16 @@ export default function UploadPage({ meta }: { meta: Meta | null }) {
                       ? "Upload failed"
                       : `Uploading — ${formatBytes(sentBytes)} / ${formatBytes(file.size)}`
                 }
+                etaSeconds={etaSeconds}
                 active={phase === "uploading"}
                 failed={phase === "error"}
               />
+              {phase === "uploading" && (
+                <div className="mt-2 flex flex-wrap gap-x-5 text-[11px] text-faint tnum">
+                  <span>{formatRate(rate)}</span>
+                  <Countdown seconds={etaSeconds} className="text-accent-400" />
+                </div>
+              )}
               {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
             </motion.div>
           )}

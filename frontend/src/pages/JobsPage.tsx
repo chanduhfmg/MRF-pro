@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import PageTransition from "../components/PageTransition";
 import PageHeader from "../components/PageHeader";
 import GlassCard from "../components/GlassCard";
 import StatusBadge from "../components/StatusBadge";
 import EmptyState from "../components/EmptyState";
+import Countdown from "../components/Countdown";
+import Select from "../components/Select";
 import { Skeleton } from "../components/Skeleton";
 import { useAsync } from "../hooks/useAsync";
 import { api, type JobFilters } from "../lib/api";
@@ -16,11 +18,18 @@ import {
   formatRelative,
 } from "../lib/format";
 
-const STATUSES: (JobStatus | "")[] = ["", "queued", "processing", "completed", "failed"];
+const STATUSES: (JobStatus | "")[] = ["", "queued", "processing", "completed", "failed", "cancelled"];
 const PAGE = 25;
 
 export default function JobsPage() {
   const navigate = useNavigate();
+  const [stopping, setStopping] = useState<Set<string>>(new Set());
+  const [rerunning, setRerunning] = useState<Set<string>>(new Set());
+  const [rerunErrors, setRerunErrors] = useState<Record<string, string>>({});
+  const [params, setParams] = useSearchParams();
+  // ?search=<id> shows just the batch a single NPI/TIN search produced, which
+  // is where the Search page sends you after queueing several files at once.
+  const searchId = params.get("search");
   const [company, setCompany] = useState("");
   const [status, setStatus] = useState<JobStatus | "">("");
   const [from, setFrom] = useState("");
@@ -39,11 +48,71 @@ export default function JobsPage() {
     }),
     [company, status, from, to, page],
   );
-  const jobsQ = useAsync(() => api.listJobs(filters), [JSON.stringify(filters)]);
+  const jobsQ = useAsync(
+    async () => {
+      if (searchId) {
+        const jobs = await api.jobsForSearch(searchId);
+        return { jobs, total: jobs.length, limit: jobs.length, offset: 0 };
+      }
+      return api.listJobs(filters);
+    },
+    [JSON.stringify(filters), searchId],
+  );
 
   const total = jobsQ.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE));
   const anyFilter = company || status || from || to;
+
+  // While anything is running, refresh quietly so the countdowns re-sync
+  // with the worker's real progress instead of drifting on a stale number.
+  const anyRunning = (jobsQ.data?.jobs ?? []).some(
+    (j) => j.status === "processing" || j.status === "queued",
+  );
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = window.setInterval(() => jobsQ.silentRefetch(), 5000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyRunning, JSON.stringify(filters), searchId]);
+
+  async function stopJob(id: string) {
+    setStopping((s) => new Set(s).add(id));
+    try {
+      await api.cancelJob(id);
+      jobsQ.silentRefetch();
+    } catch {
+      /* the row keeps its current state; the detail page shows the reason */
+    } finally {
+      setStopping((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  }
+
+  async function rerunJob(id: string) {
+    setRerunning((s) => new Set(s).add(id));
+    setRerunErrors((e) => {
+      const { [id]: _drop, ...rest } = e;
+      return rest;
+    });
+    try {
+      await api.rerunJob(id);
+      jobsQ.silentRefetch();
+    } catch (e) {
+      setRerunErrors((prev) => ({
+        ...prev,
+        [id]: e instanceof Error ? e.message : String(e),
+      }));
+    } finally {
+      setRerunning((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  }
 
   function resetFilters() {
     setCompany("");
@@ -65,41 +134,50 @@ export default function JobsPage() {
         }
       />
 
+      {searchId && (
+        <GlassCard className="mb-5 flex flex-wrap items-center justify-between gap-3 p-4">
+          <span className="text-xs text-dim">
+            Showing only the jobs queued from one NPI/TIN search.
+          </span>
+          <button
+            className="btn btn-ghost !px-3 !py-1.5 !text-xs"
+            onClick={() => setParams({})}
+          >
+            Show all jobs
+          </button>
+        </GlassCard>
+      )}
+
       {/* Filters */}
-      <GlassCard className="mb-5 p-4" delay={0}>
+      <GlassCard className={`mb-5 p-4 ${searchId ? "hidden" : ""}`} delay={0}>
         <div className="flex flex-wrap items-end gap-3">
           <Filter label="Company">
-            <select
-              className="input"
+            <Select
+              ariaLabel="Filter by insurance company"
               value={company}
-              onChange={(e) => {
+              onChange={(v) => {
                 setPage(0);
-                setCompany(e.target.value);
+                setCompany(v);
               }}
-            >
-              <option value="">All</option>
-              {(companiesQ.data ?? []).map((c) => (
-                <option key={c.key} value={c.key}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: "", label: "All" },
+                ...(companiesQ.data ?? []).map((c) => ({ value: c.key, label: c.label })),
+              ]}
+            />
           </Filter>
           <Filter label="Status">
-            <select
-              className="input"
+            <Select
+              ariaLabel="Filter by job status"
               value={status}
-              onChange={(e) => {
+              onChange={(v) => {
                 setPage(0);
-                setStatus(e.target.value as JobStatus | "");
+                setStatus(v as JobStatus | "");
               }}
-            >
-              {STATUSES.map((s) => (
-                <option key={s || "all"} value={s}>
-                  {s ? s[0].toUpperCase() + s.slice(1) : "All"}
-                </option>
-              ))}
-            </select>
+              options={STATUSES.map((s) => ({
+                value: s,
+                label: s ? s[0].toUpperCase() + s.slice(1) : "All",
+              }))}
+            />
           </Filter>
           <Filter label="From">
             <input
@@ -142,7 +220,7 @@ export default function JobsPage() {
                 <Th>Status</Th>
                 <Th className="text-right">Records</Th>
                 <Th className="text-right">Size</Th>
-                <Th className="text-right">Duration</Th>
+                <Th className="text-right">Duration / ETA</Th>
                 <Th className="text-right">Created</Th>
                 <Th className="text-right pr-5">Output</Th>
               </tr>
@@ -176,30 +254,96 @@ export default function JobsPage() {
                       <StatusBadge status={j.status} size="xs" />
                     </td>
                     <td className="px-4 py-3.5 text-right tnum text-dim">
-                      {j.status === "completed"
-                        ? formatNumber(j.record_count ?? 0)
-                        : j.status === "processing"
-                          ? formatNumber(j.records_processed)
-                          : "—"}
+                      {j.status === "completed" ? (
+                        <>
+                          {formatNumber(j.record_count ?? 0)}
+                          {j.matched_code_count != null && (
+                            <span
+                              className="mt-0.5 block text-[10px] font-normal text-faint"
+                              title={
+                                j.matched_codes && j.matched_codes.length
+                                  ? `Codes matched: ${j.matched_codes.join(", ")}`
+                                  : "None of the requested codes appeared in this file"
+                              }
+                            >
+                              {j.requested_code_count != null
+                                ? `${j.matched_code_count}/${j.requested_code_count} codes matched`
+                                : `${j.matched_code_count} code${j.matched_code_count === 1 ? "" : "s"} billed by this provider`}
+                            </span>
+                          )}
+                        </>
+                      ) : j.status === "processing" ? (
+                        formatNumber(j.records_processed)
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="px-4 py-3.5 text-right tnum text-dim">
                       {formatBytes(j.output_size_bytes)}
                     </td>
-                    <td className="px-4 py-3.5 text-right tnum text-dim">
-                      {formatDuration(j.duration_seconds)}
+                    <td className="px-4 py-3.5 text-right tnum">
+                      {j.status === "processing" ? (
+                        <Countdown seconds={j.eta_seconds} className="text-accent-400" />
+                      ) : j.status === "queued" ? (
+                        <span className="text-faint">waiting</span>
+                      ) : (
+                        <span className="text-dim">{formatDuration(j.duration_seconds)}</span>
+                      )}
                     </td>
                     <td className="px-4 py-3.5 text-right text-faint" title={j.created_at}>
                       {formatRelative(j.created_at)}
                     </td>
                     <td className="px-4 py-3.5 pr-5 text-right">
                       {j.has_output ? (
-                        <a
-                          href={api.downloadUrl(j.id)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="btn btn-ghost !px-2.5 !py-1.5 !text-xs"
+                        <span className="inline-flex gap-1.5" title={j.download_name ?? undefined}>
+                          {(j.has_xlsx || (j.record_count ?? 0) <= 1_000_000) && (
+                            <a
+                              href={api.downloadUrl(j.id, "xlsx")}
+                              onClick={(e) => e.stopPropagation()}
+                              className="btn btn-primary !px-2.5 !py-1.5 !text-xs"
+                            >
+                              <DownloadIcon /> Excel
+                            </a>
+                          )}
+                          <a
+                            href={api.downloadUrl(j.id, "zip")}
+                            onClick={(e) => e.stopPropagation()}
+                            className="btn btn-ghost !px-2.5 !py-1.5 !text-xs"
+                          >
+                            Zip
+                          </a>
+                        </span>
+                      ) : j.status === "queued" || j.status === "processing" ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            stopJob(j.id);
+                          }}
+                          disabled={stopping.has(j.id) || j.cancel_requested}
+                          className="btn !px-2.5 !py-1.5 !text-xs border border-red-500/30 bg-red-500/10 text-red-200 hover:bg-red-500/20"
+                          title={j.status === "queued" ? "Remove from queue" : "Stop this extraction"}
                         >
-                          <DownloadIcon /> Zip
-                        </a>
+                          {j.cancel_requested || stopping.has(j.id) ? "Stopping…" : "Stop"}
+                        </button>
+                      ) : j.status === "failed" ? (
+                        <span className="inline-flex flex-col items-end gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              rerunJob(j.id);
+                            }}
+                            disabled={rerunning.has(j.id)}
+                            className="btn btn-ghost !px-2.5 !py-1.5 !text-xs"
+                            title={j.error_message ?? "Retry this extraction"}
+                          >
+                            <RerunIcon /> {rerunning.has(j.id) ? "Queuing…" : "Rerun"}
+                          </button>
+                          {rerunErrors[j.id] && (
+                            <span className="max-w-[180px] truncate text-[10px] text-red-300" title={rerunErrors[j.id]}>
+                              {rerunErrors[j.id]}
+                            </span>
+                          )}
+                        </span>
                       ) : (
                         <span className="text-xs text-faint">—</span>
                       )}
@@ -273,6 +417,19 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return <th className={`px-4 py-3 font-medium ${className}`}>{children}</th>;
 }
 
+function RerunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">
+      <path
+        d="M4 10a8 8 0 0114.5-4.5M20 14a8 8 0 01-14.5 4.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path d="M18 4v5h-5M6 20v-5h5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 function DownloadIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">

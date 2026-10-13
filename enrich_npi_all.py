@@ -208,7 +208,7 @@ def _primary_zip(zip5_values):
 
 
 def iter_enriched_rows(rows, *, threads=8, max_npis_per_row=MAX_NPIS_PER_ROW,
-                       chunk_size=400, progress=None, stats=None):
+                       chunk_size=400, progress=None, stats=None, cache=None):
     """Streaming counterpart of enrich_csv(): consume an iterable of row
     dicts (straight from extract_tic_all.iter_rate_rows), attach the six
     provider_* columns, and yield each enriched row.
@@ -221,10 +221,15 @@ def iter_enriched_rows(rows, *, threads=8, max_npis_per_row=MAX_NPIS_PER_ROW,
     `progress`: optional hook, called roughly every 5s with kwargs
     (phase="enrich", rows, unique_npis, skipped, elapsed).
     `stats`: optional dict, updated in place with final counters.
+    `cache`: optional dict the caller owns; filled with npi -> info for
+    every NPI looked up, so the caller can emit a provider directory
+    (one line per NPI) alongside the rate rows. `max_npis_per_row` <= 0
+    means no cap: every NPI on the row is enriched.
     """
     import concurrent.futures as _cf
 
-    cache: dict[str, dict] = {}
+    if cache is None:
+        cache = {}
     rows_written = 0
     rows_skipped_npi_eq_tin = 0
     unique_looked_up = 0

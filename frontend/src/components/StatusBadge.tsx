@@ -29,6 +29,13 @@ const MAP: Record<
     text: "text-red-300",
     ring: "ring-red-500/25 bg-red-500/10",
   },
+  // Stopped on purpose - neutral, not alarming. Nothing went wrong.
+  cancelled: {
+    label: "Stopped",
+    dot: "bg-slate-400",
+    text: "text-slate-300",
+    ring: "ring-slate-500/25 bg-slate-500/10",
+  },
 };
 
 export default function StatusBadge({

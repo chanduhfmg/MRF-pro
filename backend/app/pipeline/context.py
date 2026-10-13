@@ -32,6 +32,9 @@ class ProgressReporter:
     _stage: str | None = field(default=None, init=False)
     _bytes: int = field(default=0, init=False)
     _records: int = field(default=0, init=False)
+    _downloaded: int | None = field(default=None, init=False)
+    _eta: float | None = field(default=None, init=False)
+    _bps: float | None = field(default=None, init=False)
 
     def set_stage(self, stage: str) -> None:
         self._stage = stage
@@ -44,6 +47,9 @@ class ProgressReporter:
         bytes_processed: int | None = None,
         records_processed: int | None = None,
         total_bytes: int | None = None,
+        downloaded_bytes: int | None = None,
+        eta_seconds: float | None = None,
+        throughput_bps: float | None = None,
     ) -> None:
         if stage is not None:
             self._stage = stage
@@ -53,10 +59,34 @@ class ProgressReporter:
             self._records = records_processed
         if total_bytes is not None:
             self.total_bytes = total_bytes
+        if downloaded_bytes is not None:
+            self._downloaded = downloaded_bytes
+        if eta_seconds is not None:
+            self._eta = eta_seconds
+        if throughput_bps is not None:
+            self._bps = throughput_bps
         self._write(force=stage is not None)
 
     def flush(self) -> None:
         self._write(force=True)
+
+    def check_cancel(self) -> None:
+        """Abort the pipeline if the user has asked for this job to stop.
+
+        Called on every actual progress write (so at most every
+        `min_interval` seconds, plus every stage change) and available to
+        the pipeline at cheap points between phases. Raises JobCancelled,
+        which unwinds the generator chain - CSV writers and the download's
+        .part file clean themselves up on the way out.
+        """
+        try:
+            with session_scope() as db:
+                cancelled = crud.is_job_cancel_requested(db, self.job_id)
+        except Exception:
+            log.exception("cancel check failed for job %s", self.job_id)
+            return
+        if cancelled:
+            raise JobCancelled(f"job {self.job_id} stopped by user")
 
     # -- internal ---------------------------------------------------------
 
@@ -74,6 +104,11 @@ class ProgressReporter:
                     bytes_processed=self._bytes,
                     records_processed=self._records,
                     total_bytes=self.total_bytes,
+                    downloaded_bytes=self._downloaded,
+                    eta_seconds=self._eta,
+                    throughput_bps=self._bps,
                 )
         except Exception:  # progress writes must never kill a job
             log.exception("progress write failed for job %s", self.job_id)
+        # Deliberately outside the try: JobCancelled must propagate.
+        self.check_cancel()

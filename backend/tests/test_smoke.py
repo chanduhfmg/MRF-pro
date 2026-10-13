@@ -63,7 +63,7 @@ def test_companies(app_ctx):
     r = client.get("/api/companies")
     assert r.status_code == 200
     keys = {c["key"] for c in r.json()}
-    assert {"uhc", "aetna", "mvp", "anthem"} <= keys
+    assert {"uhc", "aetna", "mvp", "anthem", "cigna"} <= keys
 
 
 def test_full_pipeline_stub(app_ctx):
@@ -116,10 +116,29 @@ def test_full_pipeline_stub(app_ctx):
     assert st["status"] == "completed"
     assert st["percent"] == 100.0
 
-    # 5. download returns a valid zip of CSV parts
-    dl = client.get(f"/api/jobs/{job_id}/download")
+    # 5. download: the default is a single Excel workbook, named descriptively
+    xl = client.get(f"/api/jobs/{job_id}/download")
+    assert xl.status_code == 200, xl.text
+    assert xl.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert 'filename="AETNA_' in xl.headers["content-disposition"]
+    assert xl.headers["content-disposition"].rstrip('"').endswith(".xlsx")
+    assert detail["has_xlsx"] is True
+    assert detail["download_name"].startswith("AETNA_") and detail["download_name"].endswith(".xlsx")
+
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(xl.content), read_only=True)
+    assert "rates" in wb.sheetnames and "summary" in wb.sheetnames
+    rows = list(wb["rates"].iter_rows(values_only=True))
+    assert rows[0][0] == "billing_code"
+    assert len(rows) - 1 == detail["record_count"]
+
+    # ...and the CSV zip is still there on request
+    dl = client.get(f"/api/jobs/{job_id}/download?format=zip")
     assert dl.status_code == 200
     assert dl.headers["content-type"] == "application/zip"
+    assert dl.headers["content-disposition"].rstrip('"').endswith(".zip")
     zf = zipfile.ZipFile(io.BytesIO(dl.content))
     names = zf.namelist()
     assert any(n.startswith("part_") and n.endswith(".csv") for n in names)
@@ -149,7 +168,8 @@ def test_bad_company_rejected(app_ctx):
     client, *_ = app_ctx
     r = client.post(
         "/api/jobs/uploads",
-        json={"insurance_company": "cigna", "filename": "x.json.gz", "file_size": 10},
+        json={"insurance_company": "notapayer", "filename": "x.json.gz",
+              "file_size": 10},
     )
     assert r.status_code == 422
 

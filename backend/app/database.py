@@ -73,7 +73,49 @@ def session_scope() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    """Create tables if they don't exist. Safe to call repeatedly."""
+    """Create tables if they don't exist, and add any columns the models
+    declare that the live tables lack. Safe to call repeatedly."""
     from . import models  # noqa: F401  (register mappers)
 
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """Additive, in-place migration.
+
+    create_all() only creates missing *tables*; a new column on an existing
+    table used to mean wiping the database. That throws away every job the
+    user has run. This adds the column instead. Only additions are handled -
+    renames, type changes and drops are rare enough to do by hand.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger("mrf.db")
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(engine.dialect)}"
+                default = None
+                if col.default is not None and not callable(col.default.arg):
+                    default = col.default.arg
+                if default is not None:
+                    if isinstance(default, bool):
+                        lit = "1" if default else "0"
+                    elif isinstance(default, (int, float)):
+                        lit = str(default)
+                    else:
+                        lit = "'" + str(default).replace("'", "''") + "'"
+                    ddl += f" DEFAULT {lit}"
+                    if not col.nullable:
+                        ddl += " NOT NULL"
+                conn.execute(text(ddl))
+                log.info("added column %s.%s", table.name, col.name)

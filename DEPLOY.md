@@ -27,7 +27,7 @@ sudo -u mrf git clone <repo-url> /opt/mrf-dashboard      # or rsync the tree
 # MySQL (already installed per your setup)
 sudo mysql < /opt/mrf-dashboard/backend/schema.sql
 sudo mysql -e "CREATE USER 'mrf'@'localhost' IDENTIFIED BY 'CHANGE-ME';
-               GRANT ALL PRIVILEGES ON mrf_dashboard.* TO 'mrf'@'localhost';
+               GRANT ALL PRIVILEGES ON mrf_pro.* TO 'mrf'@'localhost';
                FLUSH PRIVILEGES;"
 ```
 
@@ -46,7 +46,7 @@ sudo -u mrf bash -lc '
 Edit `/opt/mrf-dashboard/backend/.env`:
 
 ```ini
-DATABASE_URL=mysql+pymysql://mrf:CHANGE-ME@127.0.0.1:3306/mrf_dashboard
+DATABASE_URL=mysql+pymysql://mrf:CHANGE-ME@127.0.0.1:3306/mrf_pro?charset=utf8mb4
 DATA_ROOT=/opt/mrf-dashboard/data
 CORS_ORIGINS=http://172.22.6.98
 EXTRACTION_MODE=real

@@ -5,7 +5,12 @@
 #   ./scripts/dev.ps1
 #   ./scripts/dev.ps1 -SetupOnly     # just prepare, don't launch
 
-param([switch]$SetupOnly)
+#   ./scripts/dev.ps1 -Stub           # simulate extraction (no real MRF needed)
+#
+# Default is the REAL engine, so an NPI/TIN search downloads and parses actual
+# payer files. -Stub keeps the old fake-progress behaviour for UI work.
+
+param([switch]$SetupOnly, [switch]$Stub)
 
 $ErrorActionPreference = "Stop"
 $root      = Split-Path -Parent $PSScriptRoot
@@ -27,9 +32,10 @@ if (-not (Test-Path $venvPy)) {
 # --- 2. backend/.env -----------------------------------------------------
 $envFile = Join-Path $backend ".env"
 if (-not (Test-Path $envFile)) {
-  Step "Writing backend/.env (SQLite + stub engine)"
+  $mode = if ($Stub) { "stub" } else { "real" }
+  Step "Writing backend/.env (SQLite + $mode engine)"
   (Get-Content (Join-Path $backend ".env.example")) `
-    -replace '^EXTRACTION_MODE=.*', 'EXTRACTION_MODE=stub' |
+    -replace '^EXTRACTION_MODE=.*', "EXTRACTION_MODE=$mode" |
     Set-Content -Encoding utf8 $envFile
 }
 
@@ -57,7 +63,8 @@ Start-Process powershell -ArgumentList @(
   "-NoExit","-Command","cd '$frontend'; npm run dev")
 
 Write-Host ""
-Write-Host "  UI    http://localhost:5173"       -ForegroundColor Green
-Write-Host "  API   http://localhost:8000/docs"  -ForegroundColor Green
+Write-Host "  UI      http://localhost:5173"        -ForegroundColor Green
+Write-Host "  Search  http://localhost:5173/search" -ForegroundColor Green
+Write-Host "  API     http://localhost:8000/docs"   -ForegroundColor Green
 Write-Host ""
 Write-Host "Close the three spawned windows (or Ctrl+C in each) to stop." -ForegroundColor DarkGray
